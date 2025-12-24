@@ -1,0 +1,231 @@
+# ============================================
+# .env.example
+# Copy this to .env and update values
+# ============================================
+
+# Database Configuration
+DATABASE_HOST=postgres
+DATABASE_PORT=5432
+DATABASE_USER=postgres
+DATABASE_PASSWORD=postgres123
+DATABASE_NAME=ecommerce_db
+
+# Redis Configuration
+REDIS_HOST=redis
+REDIS_PORT=6379
+
+# JWT Configuration
+JWT_SECRET=your-super-secret-jwt-key-change-this-in-production-please
+JWT_EXPIRES_IN=1d
+
+# Service URLs (for inter-service communication)
+USER_SERVICE_URL=http://user-service:3001
+PRODUCT_SERVICE_URL=http://product-service:3002
+ORDER_SERVICE_URL=http://order-service:3003
+
+# Node Environment
+NODE_ENV=development
+
+
+# ============================================
+# README.md - Quick Start Guide
+# ============================================
+
+# 🚀 Microservices E-commerce Demo
+
+## Quick Start
+
+### Prerequisites
+- Docker & Docker Compose installed
+- Node.js 18+ (if running without Docker)
+- Git
+
+### Step 1: Clone and Setup
+```bash
+# Create project directory structure
+mkdir microservices-ecommerce
+cd microservices-ecommerce
+
+# Create subdirectories
+mkdir api-gateway user-service product-service order-service
+```
+
+### Step 2: Setup Environment
+```bash
+# Copy .env.example to .env
+cp .env.example .env
+
+# Update values if needed (default values work for Docker)
+```
+
+### Step 3: Start Services
+```bash
+# Build and start all services
+docker-compose up --build
+
+# Or run in background
+docker-compose up -d --build
+```
+
+### Step 4: Wait for Services to Start
+All services will be available at:
+- API Gateway: http://localhost:3000
+- User Service: http://localhost:3001
+- Product Service: http://localhost:3002
+- Order Service: http://localhost:3003
+
+### Step 5: Test the API
+
+#### 1. Register a User
+```bash
+curl -X POST http://localhost:3000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "test@example.com",
+    "password": "password123",
+    "name": "Test User"
+  }'
+```
+
+#### 2. Login
+```bash
+curl -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "test@example.com",
+    "password": "password123"
+  }'
+
+# Save the access_token from response
+```
+
+#### 3. Create a Product (with token)
+```bash
+curl -X POST http://localhost:3000/api/products \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -d '{
+    "name": "MacBook Pro",
+    "description": "Apple MacBook Pro 16 inch",
+    "price": 2499.99,
+    "stock": 10,
+    "imageUrl": "https://example.com/macbook.jpg"
+  }'
+
+# Save the product id from response
+```
+
+#### 4. Get Products List
+```bash
+curl http://localhost:3000/api/products
+```
+
+#### 5. Create an Order (with token)
+```bash
+curl -X POST http://localhost:3000/api/orders \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -d '{
+    "items": [
+      {
+        "productId": "PRODUCT_ID_HERE",
+        "quantity": 2
+      }
+    ]
+  }'
+```
+
+#### 6. Get My Orders (with token)
+```bash
+curl http://localhost:3000/api/orders \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE"
+```
+
+### Useful Commands
+
+```bash
+# View logs
+docker-compose logs -f
+
+# View specific service logs
+docker-compose logs -f api-gateway
+
+# Stop services
+docker-compose down
+
+# Stop and remove volumes (reset database)
+docker-compose down -v
+
+# Rebuild specific service
+docker-compose up -d --build api-gateway
+```
+
+### Troubleshooting
+
+**Services not starting?**
+```bash
+# Check if ports are available
+lsof -i :3000
+lsof -i :3001
+lsof -i :3002
+lsof -i :3003
+lsof -i :5432
+lsof -i :6379
+
+# Restart Docker
+docker-compose down
+docker-compose up --build
+```
+
+**Database connection error?**
+```bash
+# Check PostgreSQL logs
+docker-compose logs postgres
+
+# Restart database
+docker-compose restart postgres
+```
+
+### Project Structure
+```
+microservices-ecommerce/
+├── docker-compose.yml
+├── .env
+├── api-gateway/
+│   ├── src/
+│   ├── Dockerfile
+│   ├── package.json
+│   └── tsconfig.json
+├── user-service/
+│   ├── src/
+│   ├── Dockerfile
+│   ├── package.json
+│   └── tsconfig.json
+├── product-service/
+│   ├── src/
+│   ├── Dockerfile
+│   ├── package.json
+│   └── tsconfig.json
+└── order-service/
+    ├── src/
+    ├── Dockerfile
+    ├── package.json
+    └── tsconfig.json
+```
+
+### API Documentation
+
+See the main documentation artifact for complete API details.
+
+### Next Steps
+
+- [ ] Add Swagger documentation
+- [ ] Implement rate limiting
+- [ ] Add comprehensive error handling
+- [ ] Write unit tests
+- [ ] Add monitoring (Prometheus/Grafana)
+- [ ] Implement circuit breaker pattern
+
+---
+
+**Happy Learning! 🎉**

@@ -1,0 +1,375 @@
+// ============================================
+// api-gateway/Dockerfile
+// ============================================
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+
+EXPOSE 3000
+
+CMD ["npm", "run", "start:dev"]
+
+
+// ============================================
+// api-gateway/package.json
+// ============================================
+{
+  "name": "api-gateway",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "build": "nest build"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.0.0",
+    "@nestjs/core": "^10.0.0",
+    "@nestjs/platform-express": "^10.0.0",
+    "@nestjs/jwt": "^10.0.0",
+    "@nestjs/axios": "^3.0.0",
+    "axios": "^1.6.0",
+    "class-validator": "^0.14.0",
+    "class-transformer": "^0.5.1",
+    "reflect-metadata": "^0.1.13",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.0.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
+
+
+// ============================================
+// api-gateway/tsconfig.json
+// ============================================
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2021",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "incremental": true,
+    "skipLibCheck": true,
+    "strictNullChecks": false,
+    "noImplicitAny": false,
+    "strictBindCallApply": false,
+    "forceConsistentCasingInFileNames": false,
+    "noFallthroughCasesInSwitch": false
+  }
+}
+
+
+// ============================================
+// api-gateway/src/main.ts
+// ============================================
+import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  
+  app.enableCors();
+  
+  app.useGlobalPipes(new ValidationPipe({
+    whitelist: true,
+    transform: true,
+  }));
+  
+  const port = process.env.PORT || 3000;
+  await app.listen(port);
+  
+  console.log(`🚀 API Gateway running on port ${port}`);
+}
+
+bootstrap();
+
+
+// ============================================
+// api-gateway/src/app.module.ts
+// ============================================
+import { Module } from '@nestjs/common';
+import { JwtModule } from '@nestjs/jwt';
+import { HttpModule } from '@nestjs/axios';
+import { AuthModule } from './auth/auth.module';
+import { ProxyModule } from './proxy/proxy.module';
+
+@Module({
+  imports: [
+    JwtModule.register({
+      global: true,
+      secret: process.env.JWT_SECRET || 'secret-key',
+      signOptions: { expiresIn: '1d' },
+    }),
+    HttpModule,
+    AuthModule,
+    ProxyModule,
+  ],
+})
+export class AppModule {}
+
+
+// ============================================
+// api-gateway/src/auth/jwt.guard.ts
+// ============================================
+import {
+  CanActivate,
+  ExecutionContext,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { Request } from 'express';
+
+@Injectable()
+export class JwtAuthGuard implements CanActivate {
+  constructor(private jwtService: JwtService) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request = context.switchToHttp().getRequest();
+    const token = this.extractTokenFromHeader(request);
+
+    if (!token) {
+      throw new UnauthorizedException('Access token is missing');
+    }
+
+    try {
+      const payload = await this.jwtService.verifyAsync(token, {
+        secret: process.env.JWT_SECRET || 'secret-key',
+      });
+      
+      // Attach user info to request
+      request['user'] = payload;
+    } catch {
+      throw new UnauthorizedException('Invalid or expired token');
+    }
+
+    return true;
+  }
+
+  private extractTokenFromHeader(request: Request): string | undefined {
+    const [type, token] = request.headers.authorization?.split(' ') ?? [];
+    return type === 'Bearer' ? token : undefined;
+  }
+}
+
+
+// ============================================
+// api-gateway/src/auth/auth.module.ts
+// ============================================
+import { Module } from '@nestjs/common';
+
+@Module({})
+export class AuthModule {}
+
+
+// ============================================
+// api-gateway/src/proxy/proxy.controller.ts
+// ============================================
+import {
+  Controller,
+  All,
+  Req,
+  Res,
+  UseGuards,
+  HttpException,
+} from '@nestjs/common';
+import { Request, Response } from 'express';
+import { ProxyService } from './proxy.service';
+import { JwtAuthGuard } from '../auth/jwt.guard';
+
+@Controller('api')
+export class ProxyController {
+  constructor(private readonly proxyService: ProxyService) {}
+
+  // Auth routes (no JWT required)
+  @All('auth/*')
+  async authProxy(@Req() req: Request, @Res() res: Response) {
+    try {
+      const result = await this.proxyService.forwardToUserService(req);
+      return res.status(result.status).json(result.data);
+    } catch (error) {
+      throw new HttpException(
+        error.response?.data || error.message,
+        error.response?.status || 500,
+      );
+    }
+  }
+
+  // User routes (JWT required)
+  @All('users/*')
+  @UseGuards(JwtAuthGuard)
+  async userProxy(@Req() req: Request, @Res() res: Response) {
+    try {
+      const result = await this.proxyService.forwardToUserService(req);
+      return res.status(result.status).json(result.data);
+    } catch (error) {
+      throw new HttpException(
+        error.response?.data || error.message,
+        error.response?.status || 500,
+      );
+    }
+  }
+
+  // Product routes (public for GET, JWT for POST/PUT/DELETE)
+  @All('products*')
+  async productProxy(@Req() req: Request, @Res() res: Response) {
+    // Check if it's a mutation operation
+    const requiresAuth = ['POST', 'PUT', 'DELETE'].includes(req.method);
+    
+    if (requiresAuth) {
+      // Manually verify JWT for mutation operations
+      const jwtGuard = new JwtAuthGuard(this.proxyService['jwtService']);
+      const canActivate = await jwtGuard.canActivate({
+        switchToHttp: () => ({
+          getRequest: () => req,
+        }),
+      } as any);
+      
+      if (!canActivate) {
+        throw new HttpException('Unauthorized', 401);
+      }
+    }
+
+    try {
+      const result = await this.proxyService.forwardToProductService(req);
+      return res.status(result.status).json(result.data);
+    } catch (error) {
+      throw new HttpException(
+        error.response?.data || error.message,
+        error.response?.status || 500,
+      );
+    }
+  }
+
+  // Order routes (JWT required)
+  @All('orders*')
+  @UseGuards(JwtAuthGuard)
+  async orderProxy(@Req() req: Request, @Res() res: Response) {
+    try {
+      // Add user ID to headers for order service
+      const userId = req['user']?.sub;
+      const result = await this.proxyService.forwardToOrderService(req, userId);
+      return res.status(result.status).json(result.data);
+    } catch (error) {
+      throw new HttpException(
+        error.response?.data || error.message,
+        error.response?.status || 500,
+      );
+    }
+  }
+}
+
+
+// ============================================
+// api-gateway/src/proxy/proxy.service.ts
+// ============================================
+import { Injectable } from '@nestjs/common';
+import { HttpService } from '@nestjs/axios';
+import { JwtService } from '@nestjs/jwt';
+import { firstValueFrom } from 'rxjs';
+import { Request } from 'express';
+
+@Injectable()
+export class ProxyService {
+  private readonly userServiceUrl: string;
+  private readonly productServiceUrl: string;
+  private readonly orderServiceUrl: string;
+
+  constructor(
+    private readonly httpService: HttpService,
+    private readonly jwtService: JwtService,
+  ) {
+    this.userServiceUrl = process.env.USER_SERVICE_URL || 'http://localhost:3001';
+    this.productServiceUrl = process.env.PRODUCT_SERVICE_URL || 'http://localhost:3002';
+    this.orderServiceUrl = process.env.ORDER_SERVICE_URL || 'http://localhost:3003';
+  }
+
+  async forwardToUserService(req: Request) {
+    const path = req.url.replace('/api', '');
+    const url = `${this.userServiceUrl}${path}`;
+
+    return this.forwardRequest(url, req.method, req.body, req.query);
+  }
+
+  async forwardToProductService(req: Request) {
+    const path = req.url.replace('/api', '');
+    const url = `${this.productServiceUrl}${path}`;
+
+    return this.forwardRequest(url, req.method, req.body, req.query);
+  }
+
+  async forwardToOrderService(req: Request, userId?: string) {
+    const path = req.url.replace('/api', '');
+    const url = `${this.orderServiceUrl}${path}`;
+
+    const headers = userId ? { 'x-user-id': userId } : {};
+    return this.forwardRequest(url, req.method, req.body, req.query, headers);
+  }
+
+  private async forwardRequest(
+    url: string,
+    method: string,
+    body?: any,
+    query?: any,
+    headers?: any,
+  ) {
+    const config = {
+      params: query,
+      headers,
+    };
+
+    let response;
+
+    switch (method.toUpperCase()) {
+      case 'GET':
+        response = await firstValueFrom(this.httpService.get(url, config));
+        break;
+      case 'POST':
+        response = await firstValueFrom(this.httpService.post(url, body, config));
+        break;
+      case 'PUT':
+        response = await firstValueFrom(this.httpService.put(url, body, config));
+        break;
+      case 'PATCH':
+        response = await firstValueFrom(this.httpService.patch(url, body, config));
+        break;
+      case 'DELETE':
+        response = await firstValueFrom(this.httpService.delete(url, config));
+        break;
+      default:
+        throw new Error(`Unsupported HTTP method: ${method}`);
+    }
+
+    return response;
+  }
+}
+
+
+// ============================================
+// api-gateway/src/proxy/proxy.module.ts
+// ============================================
+import { Module } from '@nestjs/common';
+import { HttpModule } from '@nestjs/axios';
+import { ProxyController } from './proxy.controller';
+import { ProxyService } from './proxy.service';
+
+@Module({
+  imports: [HttpModule],
+  controllers: [ProxyController],
+  providers: [ProxyService],
+})
+export class ProxyModule {}
