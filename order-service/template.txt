@@ -1,0 +1,443 @@
+// ============================================
+// order-service/Dockerfile
+// ============================================
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+
+EXPOSE 3003
+
+CMD ["npm", "run", "start:dev"]
+
+
+// ============================================
+// order-service/package.json
+// ============================================
+{
+  "name": "order-service",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "build": "nest build"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.0.0",
+    "@nestjs/core": "^10.0.0",
+    "@nestjs/platform-express": "^10.0.0",
+    "@nestjs/typeorm": "^10.0.0",
+    "@nestjs/axios": "^3.0.0",
+    "typeorm": "^0.3.17",
+    "pg": "^8.11.0",
+    "axios": "^1.6.0",
+    "class-validator": "^0.14.0",
+    "class-transformer": "^0.5.1",
+    "reflect-metadata": "^0.1.13",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.0.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
+
+
+// ============================================
+// order-service/tsconfig.json
+// ============================================
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2021",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "incremental": true,
+    "skipLibCheck": true,
+    "strictNullChecks": false,
+    "noImplicitAny": false,
+    "strictBindCallApply": false,
+    "forceConsistentCasingInFileNames": false,
+    "noFallthroughCasesInSwitch": false
+  }
+}
+
+
+// ============================================
+// order-service/src/main.ts
+// ============================================
+import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  
+  app.useGlobalPipes(new ValidationPipe({
+    whitelist: true,
+    transform: true,
+  }));
+  
+  const port = process.env.PORT || 3003;
+  await app.listen(port);
+  
+  console.log(`🚀 Order Service running on port ${port}`);
+}
+
+bootstrap();
+
+
+// ============================================
+// order-service/src/app.module.ts
+// ============================================
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { HttpModule } from '@nestjs/axios';
+import { OrderModule } from './order/order.module';
+
+@Module({
+  imports: [
+    TypeOrmModule.forRoot({
+      type: 'postgres',
+      host: process.env.DATABASE_HOST || 'localhost',
+      port: parseInt(process.env.DATABASE_PORT) || 5432,
+      username: process.env.DATABASE_USER || 'postgres',
+      password: process.env.DATABASE_PASSWORD || 'postgres123',
+      database: process.env.DATABASE_NAME || 'ecommerce_db',
+      schema: process.env.DATABASE_SCHEMA || 'order_schema',
+      entities: [__dirname + '/**/*.entity{.ts,.js}'],
+      synchronize: true,
+      logging: true,
+    }),
+    HttpModule,
+    OrderModule,
+  ],
+})
+export class AppModule {}
+
+
+// ============================================
+// order-service/src/order/order.entity.ts
+// ============================================
+import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, OneToMany } from 'typeorm';
+import { OrderItem } from './order-item.entity';
+
+export enum OrderStatus {
+  PENDING = 'pending',
+  CONFIRMED = 'confirmed',
+  CANCELLED = 'cancelled',
+}
+
+@Entity('orders')
+export class Order {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column('uuid')
+  userId: string;
+
+  @Column('decimal', { precision: 10, scale: 2 })
+  totalAmount: number;
+
+  @Column({
+    type: 'enum',
+    enum: OrderStatus,
+    default: OrderStatus.PENDING,
+  })
+  status: OrderStatus;
+
+  @OneToMany(() => OrderItem, (orderItem) => orderItem.order, { cascade: true })
+  items: OrderItem[];
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+}
+
+
+// ============================================
+// order-service/src/order/order-item.entity.ts
+// ============================================
+import { Entity, Column, PrimaryGeneratedColumn, ManyToOne, JoinColumn } from 'typeorm';
+import { Order } from './order.entity';
+
+@Entity('order_items')
+export class OrderItem {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column('uuid')
+  orderId: string;
+
+  @Column('uuid')
+  productId: string;
+
+  @Column()
+  productName: string;
+
+  @Column('int')
+  quantity: number;
+
+  @Column('decimal', { precision: 10, scale: 2 })
+  price: number;
+
+  @ManyToOne(() => Order, (order) => order.items)
+  @JoinColumn({ name: 'orderId' })
+  order: Order;
+}
+
+
+// ============================================
+// order-service/src/order/dto/create-order.dto.ts
+// ============================================
+import { IsArray, ValidateNested, IsUUID, IsNumber, Min } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class OrderItemDto {
+  @IsUUID()
+  productId: string;
+
+  @IsNumber()
+  @Min(1)
+  quantity: number;
+}
+
+export class CreateOrderDto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => OrderItemDto)
+  items: OrderItemDto[];
+}
+
+
+// ============================================
+// order-service/src/clients/product.client.ts
+// ============================================
+import { Injectable, BadRequestException } from '@nestjs/common';
+import { HttpService } from '@nestjs/axios';
+import { firstValueFrom } from 'rxjs';
+
+@Injectable()
+export class ProductClient {
+  private readonly baseUrl: string;
+
+  constructor(private readonly httpService: HttpService) {
+    this.baseUrl = process.env.PRODUCT_SERVICE_URL || 'http://localhost:3002';
+  }
+
+  async getProduct(productId: string) {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get(`${this.baseUrl}/products/${productId}`),
+      );
+      return response.data;
+    } catch (error) {
+      throw new BadRequestException(`Product not found: ${productId}`);
+    }
+  }
+
+  async reduceStock(productId: string, quantity: number) {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.post(`${this.baseUrl}/products/${productId}/reduce-stock`, {
+          quantity,
+        }),
+      );
+      return response.data;
+    } catch (error) {
+      throw new BadRequestException(
+        error.response?.data?.message || `Failed to reduce stock for product: ${productId}`,
+      );
+    }
+  }
+}
+
+
+// ============================================
+// order-service/src/order/order.service.ts
+// ============================================
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Order, OrderStatus } from './order.entity';
+import { OrderItem } from './order-item.entity';
+import { CreateOrderDto } from './dto/create-order.dto';
+import { ProductClient } from '../clients/product.client';
+
+@Injectable()
+export class OrderService {
+  constructor(
+    @InjectRepository(Order)
+    private orderRepository: Repository<Order>,
+    @InjectRepository(OrderItem)
+    private orderItemRepository: Repository<OrderItem>,
+    private productClient: ProductClient,
+  ) {}
+
+  async create(userId: string, createOrderDto: CreateOrderDto): Promise<Order> {
+    let totalAmount = 0;
+    const orderItems: OrderItem[] = [];
+
+    // Validate products and calculate total
+    for (const item of createOrderDto.items) {
+      const product = await this.productClient.getProduct(item.productId);
+
+      if (product.stock < item.quantity) {
+        throw new BadRequestException(
+          `Insufficient stock for product: ${product.name}. Available: ${product.stock}`,
+        );
+      }
+
+      const orderItem = this.orderItemRepository.create({
+        productId: item.productId,
+        productName: product.name,
+        quantity: item.quantity,
+        price: product.price,
+      });
+
+      orderItems.push(orderItem);
+      totalAmount += product.price * item.quantity;
+    }
+
+    // Create order
+    const order = this.orderRepository.create({
+      userId,
+      totalAmount,
+      status: OrderStatus.PENDING,
+      items: orderItems,
+    });
+
+    const savedOrder = await this.orderRepository.save(order);
+
+    // Reduce stock for each product
+    try {
+      for (const item of createOrderDto.items) {
+        await this.productClient.reduceStock(item.productId, item.quantity);
+      }
+
+      // Update order status to confirmed
+      savedOrder.status = OrderStatus.CONFIRMED;
+      await this.orderRepository.save(savedOrder);
+    } catch (error) {
+      // If stock reduction fails, cancel the order
+      savedOrder.status = OrderStatus.CANCELLED;
+      await this.orderRepository.save(savedOrder);
+      throw new BadRequestException('Failed to process order: ' + error.message);
+    }
+
+    return this.findOne(savedOrder.id);
+  }
+
+  async findAll(userId: string): Promise<Order[]> {
+    return this.orderRepository.find({
+      where: { userId },
+      relations: ['items'],
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async findOne(id: string): Promise<Order> {
+    const order = await this.orderRepository.findOne({
+      where: { id },
+      relations: ['items'],
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Order with ID ${id} not found`);
+    }
+
+    return order;
+  }
+
+  async findOneByUser(id: string, userId: string): Promise<Order> {
+    const order = await this.orderRepository.findOne({
+      where: { id, userId },
+      relations: ['items'],
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Order with ID ${id} not found`);
+    }
+
+    return order;
+  }
+}
+
+
+// ============================================
+// order-service/src/order/order.controller.ts
+// ============================================
+import { Controller, Get, Post, Body, Param, Headers } from '@nestjs/common';
+import { OrderService } from './order.service';
+import { CreateOrderDto } from './dto/create-order.dto';
+
+@Controller('orders')
+export class OrderController {
+  constructor(private readonly orderService: OrderService) {}
+
+  @Post()
+  create(
+    @Headers('x-user-id') userId: string,
+    @Body() createOrderDto: CreateOrderDto,
+  ) {
+    if (!userId) {
+      throw new Error('User ID is required');
+    }
+    return this.orderService.create(userId, createOrderDto);
+  }
+
+  @Get()
+  findAll(@Headers('x-user-id') userId: string) {
+    if (!userId) {
+      throw new Error('User ID is required');
+    }
+    return this.orderService.findAll(userId);
+  }
+
+  @Get(':id')
+  findOne(
+    @Param('id') id: string,
+    @Headers('x-user-id') userId: string,
+  ) {
+    if (!userId) {
+      throw new Error('User ID is required');
+    }
+    return this.orderService.findOneByUser(id, userId);
+  }
+}
+
+
+// ============================================
+// order-service/src/order/order.module.ts
+// ============================================
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { HttpModule } from '@nestjs/axios';
+import { Order } from './order.entity';
+import { OrderItem } from './order-item.entity';
+import { OrderService } from './order.service';
+import { OrderController } from './order.controller';
+import { ProductClient } from '../clients/product.client';
+
+@Module({
+  imports: [
+    TypeOrmModule.forFeature([Order, OrderItem]),
+    HttpModule,
+  ],
+  controllers: [OrderController],
+  providers: [OrderService, ProductClient],
+})
+export class OrderModule {}
